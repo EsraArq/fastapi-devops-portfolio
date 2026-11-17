@@ -4,7 +4,7 @@ A small FastAPI service with a repeatable delivery path from a pull request to a
 
 ```mermaid
 flowchart LR
-    PR[Pull request] --> CI[GitHub Actions tests and smoke check]
+    PR[Pull request] --> CI[GitHub Actions tests and infrastructure validation]
     CI -->|Merge to main| GHCR[GitHub Container Registry]
     GHCR -->|Image digest| Git[deploy branch]
     Git --> Argo[Argo CD]
@@ -139,6 +139,7 @@ Run the Argo CD install and deployment steps against this context. When finished
 Use Helm and a Datadog account with scoped API/application credentials for Terraform. Check Datadog billing for Kubernetes infrastructure, logs, and custom metrics. The Helm command below uses the kind containerd socket. For K3s, replace the socket path with `/run/k3s/containerd/containerd.sock`. Set your site's domain and choose a reviewed chart version. Load `DD_API_KEY` and `DD_APP_KEY` into your shell from a secret manager, without printing either value.
 
 ```sh
+# Keep this site in sync with datadog.site in infra/datadog/agent-values.yaml.
 DD_SITE='datadoghq.com'
 DD_CHART_VERSION='REPLACE_WITH_CHART_VERSION'
 kubectl create namespace datadog
@@ -146,14 +147,24 @@ printf '%s' "$DD_API_KEY" | kubectl -n datadog create secret generic datadog-api
 helm repo add datadog https://helm.datadoghq.com
 helm repo update
 helm upgrade --install datadog datadog/datadog -n datadog \
-  --version "$DD_CHART_VERSION" -f infra/datadog/agent-values.yaml --set "datadog.site=$DD_SITE" --set "datadog.criSocketPath=/run/containerd/containerd.sock"
+  --version "$DD_CHART_VERSION" -f infra/datadog/agent-values.yaml --set "datadog.criSocketPath=/run/containerd/containerd.sock"
 export DD_HOST="https://api.$DD_SITE"
 terraform -chdir=infra/datadog init
 terraform -chdir=infra/datadog plan -out=demo.tfplan
 terraform -chdir=infra/datadog apply demo.tfplan
 ```
 
-After the Agent starts, send a few requests to both `/` and `/missing` over the port forward. Repeat after the first scrape so the Datadog counter has a baseline. Use **Portfolio API** to inspect request counts by status class. In Logs Explorer filter `service:portfolio-api env:portfolio @event:http_request` and inspect `status` and `duration_ms`. The monitor is configured to alert on more than five HTTP 5xx responses over five minutes. Its notification appears in Datadog. Set a notification destination in the Terraform monitor message if you want external delivery. To exercise the monitor query safely, temporarily change the status filter to `4xx` in a dedicated demo environment, generate missing-route traffic across multiple scrapes, verify the alert, and restore `5xx`. [OpenMetrics naming](https://docs.datadoghq.com/integrations/openmetrics/) · [Kubernetes Autodiscovery](https://docs.datadoghq.com/containers/kubernetes/integrations/)
+After the Agent starts, send a few requests to both `/` and `/missing` over the port forward. Repeat after the first scrape so the Datadog counter has a baseline. The **Portfolio API** dashboard shows request counts by status class, the 5xx share of requests, and API container CPU and memory. In Logs Explorer filter `service:portfolio-api env:portfolio @event:http_request` and inspect `status` and `duration_ms`. Request logs intentionally contain only the event name, status, and duration.
+
+The monitor alerts on more than five HTTP 5xx responses over five minutes. Its notification appears in Datadog; set a notification destination in the Terraform monitor message if you want external delivery. To test safely, use a dedicated demo environment and a temporary copy of the monitor with `status_class:4xx`, its own test notification route, and the same threshold. Generate at least six `/missing` requests across multiple scrapes, verify the test monitor, then delete it. Do not change the Terraform-managed 5xx monitor or generate test failures against production. Confirm your Datadog plan supports the resources before applying Terraform; this repository does not apply Terraform automatically. [OpenMetrics naming](https://docs.datadoghq.com/integrations/openmetrics/) · [Kubernetes Autodiscovery](https://docs.datadoghq.com/containers/kubernetes/integrations/)
+
+### Troubleshooting and verified results
+
+- **Kubelet:** On the inspected kind cluster, the Agent's `kubelet` check was `[OK]` with 1,137 metric samples on its last run. No current Kubelet check error was found. The live Helm values had `datadog.kubelet.tlsVerify: false`; certificate verification is therefore disabled. Treat that as a local-demo trust workaround, not a production setting. For a real cluster, configure a trusted Kubelet serving CA and enable verification before relying on this data.
+- **Helm:** The installed resources were ready, but Helm revision 3 was marked `failed` because the upgrade was canceled (`context canceled`); revision 2 remained `deployed`. Check `helm history datadog -n datadog`, `helm status datadog -n datadog`, and Agent status before another upgrade. Do not uninstall a healthy Agent just to clear the failed history entry.
+- **Metrics and logs:** Both app OpenMetrics checks reported `[OK]` with four samples per scrape. The Agent reported four request logs processed and 81 logs sent at inspection. These are Agent-side forwarding signals; confirm the metrics and logs in Datadog Metrics Explorer and Logs Explorer when account access is available.
+- **Local validation:** Python 3.12 tests passed (3 tests), and `kubectl kustomize k8s` rendered successfully. Terraform validation and Ansible syntax checks are also run by GitHub Actions. A successful local render/check does not apply infrastructure or prove live account-side dashboard/monitor behavior.
+- **Ansible security:** The playbook requires an explicit K3s version, enables secrets encryption, limits kubeconfig permissions to `0600`, and disables the bundled public ingress components. It downloads the installer over HTTPS as root; the release variable pins the K3s binary version, but the installer script itself is fetched from a mutable URL. Review that trust boundary before using the playbook on a production host.
 
 To clean up, run `terraform -chdir=infra/datadog destroy`, `helm uninstall datadog -n datadog`, and `kubectl delete namespace datadog` if that namespace was created only for this demo. Clear credential variables from your shell.
 

@@ -1,6 +1,7 @@
 datadog:
   apiKeyExistingSecret: datadog-api-key
   clusterName: portfolio-demo
+  site: datadoghq.com
   logs:
     enabled: true
     containerCollectAll: false
