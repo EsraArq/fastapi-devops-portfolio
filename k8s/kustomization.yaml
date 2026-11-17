@@ -5,4 +5,4 @@ resources:
 images:
   - name: portfolio-api
     newName: ghcr.io/esraarq/fastapi-devops-portfolio
-    digest: sha256:e0ea87a40e2f9c9ee8ac5d733e9dc94a5db2520089aad05c45e6b25f9b118cac
+    digest: sha256:40305eb474faca9532d181822975afc341939b2a1ccc72a9fefbc2718acd2eb0
