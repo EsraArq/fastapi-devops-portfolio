@@ -12,12 +12,60 @@ provider "datadog" {}
 
 resource "datadog_dashboard" "api" {
   title       = "Portfolio API"
+  description = "HTTP traffic and Kubernetes resource usage for the portfolio API."
   layout_type = "ordered"
+
   widget {
     timeseries_definition {
-      title = "Requests by status class"
+      title = "HTTP requests by status class"
       request {
         q = "sum:portfolio.requests.count{env:portfolio,service:portfolio-api} by {status_class}.as_count()"
+      }
+    }
+  }
+
+  widget {
+    timeseries_definition {
+      title = "HTTP 5xx error rate (%)"
+      request {
+        formula {
+          formula_expression = "100 * a / b"
+          alias              = "5xx error rate (%)"
+        }
+        query {
+          metric_query {
+            data_source = "metrics"
+            name        = "a"
+            query       = "sum:portfolio.requests.count{env:portfolio,service:portfolio-api,status_class:5xx}.as_count()"
+            aggregator  = "sum"
+          }
+        }
+        query {
+          metric_query {
+            data_source = "metrics"
+            name        = "b"
+            query       = "sum:portfolio.requests.count{env:portfolio,service:portfolio-api}.as_count()"
+            aggregator  = "sum"
+          }
+        }
+      }
+    }
+  }
+
+  widget {
+    timeseries_definition {
+      title = "API container CPU usage"
+      request {
+        q = "sum:container.cpu.usage{kube_namespace:portfolio,container_name:api}"
+      }
+    }
+  }
+
+  widget {
+    timeseries_definition {
+      title = "API container memory usage"
+      request {
+        q = "sum:container.memory.usage{kube_namespace:portfolio,container_name:api}"
       }
     }
   }

@@ -19,6 +19,22 @@ jobs:
           python3 -m venv .venv
           .venv/bin/python -m pip install -r requirements-dev.txt
           .venv/bin/python -m pytest -q
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd
+        with:
+          terraform_version: 1.17.2
+          terraform_wrapper: false
+      - name: Validate Terraform
+        run: |
+          terraform fmt -check -recursive infra
+          terraform -chdir=infra/aws init -backend=false -input=false
+          terraform -chdir=infra/aws validate
+          terraform -chdir=infra/datadog init -backend=false -input=false
+          terraform -chdir=infra/datadog validate
+      - name: Validate Ansible syntax
+        run: |
+          python3 -m venv .venv-infra
+          .venv-infra/bin/python -m pip install --disable-pip-version-check 'ansible-core==2.21.6'
+          .venv-infra/bin/ansible-playbook --syntax-check -i localhost, ansible/site.yml
       - run: kubectl kustomize k8s
       - run: |
           docker build -t portfolio-api:ci .
