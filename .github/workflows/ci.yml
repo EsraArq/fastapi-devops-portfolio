@@ -33,7 +33,7 @@ jobs:
       - name: Validate Ansible syntax
         run: |
           python3 -m venv .venv-infra
-          .venv-infra/bin/python -m pip install --disable-pip-version-check 'ansible-core==2.22.0'
+          .venv-infra/bin/python -m pip install --disable-pip-version-check 'ansible-core==2.21.6'
           .venv-infra/bin/ansible-playbook --syntax-check -i localhost, ansible/site.yml
       - run: kubectl kustomize k8s
       - run: |
