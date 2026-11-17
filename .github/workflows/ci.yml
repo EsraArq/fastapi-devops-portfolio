@@ -24,7 +24,7 @@ jobs:
           docker build -t portfolio-api:ci .
           docker run --rm --detach --name api --read-only -p 127.0.0.1:8080:8080 portfolio-api:ci
           trap 'docker logs api; docker stop api' EXIT
-          curl --fail --retry 10 --retry-connrefused --retry-delay 1 http://127.0.0.1:8080/readyz
+          curl --fail --retry 10 --retry-all-errors --retry-delay 1 http://127.0.0.1:8080/readyz
 
   release:
     needs: validate
@@ -55,7 +55,7 @@ jobs:
             docker run --detach --name release-api --read-only -p 127.0.0.1:8080:8080 "$image_id"
             trap 'docker logs release-api; docker rm -f release-api' EXIT
             for path in /readyz /livez / /metrics; do
-              curl --fail --silent --show-error --retry 10 --retry-connrefused --retry-delay 1 --max-time 5 "http://127.0.0.1:8080$path" >/dev/null
+              curl --fail --silent --show-error --retry 10 --retry-all-errors --retry-delay 1 --max-time 5 "http://127.0.0.1:8080$path" >/dev/null
             done
           )
 
