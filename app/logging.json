@@ -1,0 +1,7 @@
+{
+  "version": 1,
+  "disable_existing_loggers": false,
+  "formatters": {"message": {"format": "%(message)s"}},
+  "handlers": {"stdout": {"class": "logging.StreamHandler", "formatter": "message", "stream": "ext://sys.stdout"}},
+  "loggers": {"uvicorn": {"handlers": ["stdout"], "level": "INFO", "propagate": false}}
+}

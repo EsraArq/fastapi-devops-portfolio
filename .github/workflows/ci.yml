@@ -1,0 +1,106 @@
+name: Validate and release
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - run: |
+          python3 -m venv .venv
+          .venv/bin/python -m pip install -r requirements-dev.txt
+          .venv/bin/python -m pytest -q
+      - run: kubectl kustomize k8s
+      - run: |
+          docker build -t portfolio-api:ci .
+          docker run --rm --detach --name api --read-only -p 127.0.0.1:8080:8080 portfolio-api:ci
+          trap 'docker logs api; docker stop api' EXIT
+          curl --fail --retry 10 --retry-connrefused --retry-delay 1 http://127.0.0.1:8080/readyz
+
+  release:
+    needs: validate
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    concurrency:
+      group: portfolio-release
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Publish and update the deployment branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [ "$(git ls-remote origin refs/heads/main | cut -f1)" != "$GITHUB_SHA" ]; then
+            echo "Skipping superseded main revision."
+            exit 0
+          fi
+          image="ghcr.io/$(printf '%s' "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
+          release_tag="$image:$GITHUB_SHA"
+          docker build --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" -t "$release_tag" .
+          image_id=$(docker image inspect --format '{{.Id}}' "$release_tag")
+          (
+            docker run --detach --name release-api --read-only -p 127.0.0.1:8080:8080 "$image_id"
+            trap 'docker logs release-api; docker rm -f release-api' EXIT
+            for path in /readyz /livez / /metrics; do
+              curl --fail --silent --show-error --retry 10 --retry-connrefused --retry-delay 1 --max-time 5 "http://127.0.0.1:8080$path" >/dev/null
+            done
+          )
+
+          if [[ "$(docker image inspect --format '{{.Id}}' "$release_tag")" != "$image_id" ]]; then
+            echo "Release tag no longer points to the tested image." >&2
+            exit 1
+          fi
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          push_output=$(docker push "$release_tag")
+          printf '%s\n' "$push_output"
+          digest=$(awk -v tag="$GITHUB_SHA:" '$1 == tag && $2 == "digest:" {print $3}' <<< "$push_output")
+          if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "Could not determine the published image digest." >&2
+            exit 1
+          fi
+          digest_ref="$image@$digest"
+          staging=$(mktemp -d)
+          cp -R k8s "$staging/"
+          {
+            echo 'images:'
+            echo '  - name: portfolio-api'
+            printf '    newName: %s\n    digest: %s\n' "$image" "$digest"
+          } >> "$staging/k8s/kustomization.yaml"
+          kubectl kustomize "$staging/k8s" > "$staging/rendered.yaml"
+          ruby -ryaml - "$staging/rendered.yaml" "$digest_ref" <<'RUBY'
+          manifest, expected = ARGV
+          deployments = YAML.load_stream(File.read(manifest)).compact.select do |doc|
+            doc["kind"] == "Deployment" && doc.dig("metadata", "name") == "portfolio-api"
+          end
+          abort "Expected exactly one portfolio-api Deployment" unless deployments.length == 1
+
+          containers = deployments[0].dig("spec", "template", "spec", "containers")
+          images = containers.select { |container| container["name"] == "api" }
+                             .map { |container| container["image"] }
+          abort "Expected api image #{expected}, found #{images.inspect}" unless images == [expected]
+          RUBY
+          if git ls-remote --exit-code origin refs/heads/deploy >/dev/null; then
+            git fetch origin refs/heads/deploy
+            git switch --detach FETCH_HEAD
+          else
+            git switch --orphan deployment
+          fi
+          git rm -rf --ignore-unmatch k8s
+          cp -R "$staging/k8s" .
+          git add k8s
+          if git diff --cached --quiet; then exit 0; fi
+          git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m "Deploy $GITHUB_SHA"
+          git push origin HEAD:refs/heads/deploy
